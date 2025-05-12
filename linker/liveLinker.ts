@@ -100,7 +100,15 @@ class AutoLinkerPlugin implements PluginValue {
     buildDecorations(view: EditorView, viewIsActive: boolean = true): DecorationSet {
         const builder = new RangeSetBuilder<Decoration>();
 
+        // Don't process links if the linker is deactivated
         if (!this.settings.linkerActivated) {
+            return builder.finish();
+        }
+
+        // Skip processing if typing is active and disableDuringTyping setting is on
+        // Access plugin instance from app to check typing state
+        const virtualLinkerPlugin = (this.app as any).plugins?.plugins?.["virtual-linker"];
+        if (virtualLinkerPlugin?.isTyping && this.settings.disableDuringTyping) {
             return builder.finish();
         }
 

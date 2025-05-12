@@ -42,6 +42,9 @@ export interface LinkerPluginSettings {
     excludeLinksToRealLinkedFiles: boolean;
     includeAliases: boolean;
     alwaysShowMultipleReferences: boolean;
+    // New settings for typing detection
+    disableDuringTyping: boolean;
+    typingDelay: number;
     // wordBoundaryRegex: string;
     // conversionFormat
 }
@@ -81,15 +84,86 @@ const DEFAULT_SETTINGS: LinkerPluginSettings = {
     excludeLinksToRealLinkedFiles: true,
     includeAliases: true,
     alwaysShowMultipleReferences: false,
+    disableDuringTyping: false,
+    typingDelay: 500,
     // wordBoundaryRegex: '/[\t- !-/:-@\[-`{-~\p{Emoji_Presentation}\p{Extended_Pictographic}]/u',
 };
 
 export default class LinkerPlugin extends Plugin {
     settings: LinkerPluginSettings;
     updateManager = new ExternalUpdateManager();
+    isTyping: boolean = false;
+    typingTimer: NodeJS.Timeout | null = null;
 
+    // Handler for keydown events to detect typing activity
+    private handleKeyDown() {
+        if (!this.settings.disableDuringTyping) return;
+        
+        // Set typing state to true
+        this.isTyping = true;
+        
+        // Clear any existing timer
+        if (this.typingTimer) {
+            clearTimeout(this.typingTimer);
+        }
+    }
+    
+    // Handler for keyup events to detect when typing stops
+    private handleKeyUp() {
+        if (!this.settings.disableDuringTyping) return;
+        
+        // Clear any existing timer
+        if (this.typingTimer) {
+            clearTimeout(this.typingTimer);
+        }
+        
+        // Set a new timer to indicate typing has stopped after the delay
+        this.typingTimer = setTimeout(() => {
+            this.isTyping = false;
+            // Force an update to show links once typing stops
+            this.updateManager.update();
+        }, this.settings.typingDelay);
+    }
+
+    // Bound event handlers to preserve references for later removal
+    private boundHandleKeyDown: ((this: Document, ev: KeyboardEvent) => any) | undefined;
+    private boundHandleKeyUp: ((this: Document, ev: KeyboardEvent) => any) | undefined;
+    
+    // Method to set up typing detection event listeners
+    setupTypingDetection() {
+        if (this.settings.disableDuringTyping) {
+            // Only add listeners if not already added
+            if (!this.boundHandleKeyDown) {
+                this.boundHandleKeyDown = this.handleKeyDown.bind(this);
+                this.boundHandleKeyUp = this.handleKeyUp.bind(this);
+                
+                document.addEventListener('keydown', this.handleKeyDown.bind(this));
+                document.addEventListener('keyup', this.handleKeyUp.bind(this));
+            }
+        } else {
+            // Remove listeners if they exist
+            if (this.boundHandleKeyDown) {
+                // Clear any existing timer
+                if (this.typingTimer) {
+                    clearTimeout(this.typingTimer);
+                    console.log('Typing detection timer cleared');
+                    this.typingTimer = null;
+                }
+
+                document.removeEventListener('keydown', this.handleKeyDown.bind(this));
+                document.removeEventListener('keyup', this.handleKeyUp.bind(this));
+                this.boundHandleKeyDown = undefined;
+                this.boundHandleKeyUp = undefined;
+                console.log('Typing detection disabled');
+            }
+        }
+    }
+    
     async onload() {
         await this.loadSettings();
+        
+        // Setup typing detection based on current settings
+        this.setupTypingDetection();
 
         // Set callback to update the cache when the settings are changed
         this.updateManager.registerCallback(() => {
@@ -1020,6 +1094,33 @@ class LinkerSettingTab extends PluginSettingTab {
                     await this.plugin.updateSettings({ alwaysShowMultipleReferences: value });
                 })
             );
+
+        // Add a new Performance section
+        new Setting(containerEl).setName('Performance').setHeading();
+
+        // Toggle to disable processing during typing
+        new Setting(containerEl)
+            .setName('Disable processing during typing')
+            .setDesc('If enabled, the plugin will temporarily disable link processing while you are actively typing to improve editor performance and responsiveness.')
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.disableDuringTyping).onChange(async (value) => {
+                    await this.plugin.updateSettings({ disableDuringTyping: value });
+                    this.plugin.setupTypingDetection();
+                })
+            );
+
+        // Typing delay setting
+        new Setting(containerEl)
+            .setName('Resume processing delay')
+            .setDesc('Time in milliseconds to wait after you stop typing before resuming link processing (higher values improve typing performance, lower values show links faster).')
+            .addSlider((slider) => {
+                slider.setLimits(100, 10000, 100)
+                    .setValue(this.plugin.settings.typingDelay)
+                    .setDynamicTooltip()
+                    .onChange(async (value) => {
+                        await this.plugin.updateSettings({ typingDelay: value });
+                    });
+            });
 
         new Setting(containerEl)
             .setName('Virtual link suffix')
